@@ -119,16 +119,12 @@ export default function DailyDispatch() {
   const [dateKey, setDateKey] = useState(todayKey);
   const [roster, setRoster] = useState([]);
   const [rosterTab, setRosterTab] = useState("regular");
-  const [page, setPage] = useState("roster"); // "roster" | "tasks"
+  const [page, setPage] = useState("roster"); // "roster" | "fixed"
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [bulkAddOpen, setBulkAddOpen] = useState(false);
-  const [bulkAddText, setBulkAddText] = useState("");
-  const [workCatalog, setWorkCatalog] = useState([]); // 你自己維護的「工作類型」清單(例如將近50種工作),跟工作安排清單無關
-  const [quickWorkType, setQuickWorkType] = useState("");
-  const [previewKind, setPreviewKind] = useState("tasks"); // "roster" | "tasks"
-  const [copiedKind, setCopiedKind] = useState(null); // "roster" | "tasks" | null
-  const [status, setStatus] = useState({});
-  const [tasks, setTasks] = useState([]);
+  const [copiedKind, setCopiedKind] = useState(null);
+  const [dayStatus, setStatus] = useState({});
+  const [newFixed, setNewFixed] = useState("");
+  const [fixedTab, setFixedTab] = useState("regular");
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -143,10 +139,7 @@ export default function DailyDispatch() {
   const [customTimeDraft, setCustomTimeDraft] = useState("");
   const [boardDate, setBoardDate] = useState("");
   const [pourDate, setPourDate] = useState("");
-  const [drag, setDrag] = useState(null);
   const [rosterDrag, setRosterDrag] = useState(null);
-  const dragRef = useRef(null);
-  const taskCaptureRef = useRef(null);
   const rosterCaptureRef = useRef(null);
 
   // "已讀取完成" 旗標一律用 useState,不用 useRef —
@@ -154,35 +147,19 @@ export default function DailyDispatch() {
   // 會出現「旗標已經是 true,但資料 state 其實還是舊值」的競態問題。
   const [initialized, setInitialized] = useState(false);
 
+  // 「固定出工名單」裡的人:當天沒有特別標記(排休/公休/公傷)時,一律自動算出工。
+  const status = { ...dayStatus };
+  roster.forEach((w) => {
+    if (w.fixed && !(w.id in status)) status[w.id] = "onDuty";
+  });
+
   const showError = useCallback((msg) => {
     setErrorMsg(msg);
     window.clearTimeout(showError._t);
     showError._t = window.setTimeout(() => setErrorMsg(""), 3000);
   }, []);
 
-  function normalizeTasks(rawTasks) {
-    return (rawTasks || []).map((t) => {
-      if (Array.isArray(t.groups)) {
-        return { ...t, groups: t.groups.map((g) => (Array.isArray(g) ? g : [])) };
-      }
-      const flatAssigned = Array.isArray(t.assignedTo) ? t.assignedTo : t.assignedTo ? [t.assignedTo] : [];
-      const brSet = new Set(Array.isArray(t.breaks) ? t.breaks : []);
-      const groups = [];
-      let current = [];
-      flatAssigned.forEach((id, idx) => {
-        current.push(id);
-        if (brSet.has(idx)) {
-          groups.push(current);
-          current = [];
-        }
-      });
-      if (current.length) groups.push(current);
-      return { ...t, groups };
-    });
-  }
-
-  // 出勤相關(誰上工、誰排休...)才是「每一天」各自獨立的資料;
-  // 工作項目清單本身是持續累積的,不屬於任何單一日期,所以不放在這裡讀取。
+  // 出勤相關(誰上工、誰排休...)是「每一天」各自獨立的資料。
   const loadDay = useCallback((key) => {
     try {
       const raw = readLocalStorage(`day:${key}`);
@@ -203,10 +180,6 @@ export default function DailyDispatch() {
       setLateWorkerIds(Array.isArray(parsed.lateWorkerIds) ? parsed.lateWorkerIds : []);
       setTempLeaveWorkerIds(Array.isArray(parsed.tempLeaveWorkerIds) ? parsed.tempLeaveWorkerIds : []);
       setHalfDay(parsed.halfDay && typeof parsed.halfDay === "object" ? parsed.halfDay : {});
-      // 如果是舊格式(工作項目曾經存在每日資料裡),第一次讀到時順手搬到全域清單,之後就不會再遺失。
-      if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-        setTasks((prev) => (prev.length > 0 ? prev : normalizeTasks(parsed.tasks)));
-      }
     } catch (e) {
       setStatus({});
       setDutyPerson("");
@@ -223,7 +196,7 @@ export default function DailyDispatch() {
   const persistDayState = useCallback(
     (overrides = {}) => {
       const payload = {
-        status: overrides.status !== undefined ? overrides.status : status,
+        status: overrides.status !== undefined ? overrides.status : dayStatus,
         duty: overrides.duty !== undefined ? overrides.duty : dutyPerson,
         boardDate: overrides.boardDate !== undefined ? overrides.boardDate : boardDate,
         pourDate: overrides.pourDate !== undefined ? overrides.pourDate : pourDate,
@@ -234,30 +207,12 @@ export default function DailyDispatch() {
       const ok = writeLocalStorage(`day:${overrides.key || dateKey}`, JSON.stringify(payload));
       if (!ok) showError("儲存失敗,請確認瀏覽器儲存空間或隱私模式設定");
     },
-    [dateKey, status, dutyPerson, boardDate, pourDate, lateWorkerIds, tempLeaveWorkerIds, halfDay, showError]
+    [dateKey, dayStatus, dutyPerson, boardDate, pourDate, lateWorkerIds, tempLeaveWorkerIds, halfDay, showError]
   );
 
   const persistRoster = useCallback(
     (rosterVal) => {
       const ok = writeLocalStorage("roster", JSON.stringify(rosterVal));
-      if (!ok) showError("儲存失敗,請確認瀏覽器儲存空間或隱私模式設定");
-    },
-    [showError]
-  );
-
-  // 工作項目清單:一次寫入的全域資料,不分日期,每天新增的都會一直留著。
-  const persistTasks = useCallback(
-    (tasksVal) => {
-      const ok = writeLocalStorage("tasks", JSON.stringify(tasksVal));
-      if (!ok) showError("儲存失敗,請確認瀏覽器儲存空間或隱私模式設定");
-    },
-    [showError]
-  );
-
-  // 工作類型清單(你自己維護的參考清單,例如將近50種工作),純粹存文字,不會自動變成工作項目。
-  const persistWorkCatalog = useCallback(
-    (catalogVal) => {
-      const ok = writeLocalStorage("workCatalog", JSON.stringify(catalogVal));
       if (!ok) showError("儲存失敗,請確認瀏覽器儲存空間或隱私模式設定");
     },
     [showError]
@@ -271,7 +226,7 @@ export default function DailyDispatch() {
     [showError]
   );
 
-  // 一次性初始化:讀取人員名單、標題、工作項目清單(這三樣都不分日期),並載入「今天」這個日期的出勤資料。
+  // 一次性初始化:讀取人員名單、工地名稱(不分日期),並載入「今天」這個日期的出勤資料。
   useEffect(() => {
     setLoading(true);
     try {
@@ -287,24 +242,12 @@ export default function DailyDispatch() {
     } catch (e) {
       setSiteTitle("");
     }
-    try {
-      const rawTasks = readLocalStorage("tasks");
-      setTasks(rawTasks ? normalizeTasks(JSON.parse(rawTasks)) : []);
-    } catch (e) {
-      setTasks([]);
-    }
-    try {
-      const rawCatalog = readLocalStorage("workCatalog");
-      setWorkCatalog(rawCatalog ? JSON.parse(rawCatalog) : ["晃來晃去"]);
-    } catch (e) {
-      setWorkCatalog(["晃來晃去"]);
-    }
     loadDay(todayKey);
     setInitialized(true);
     setLoading(false);
   }, []);
 
-  // 切換日期時只重新讀取當天的「出勤」資料;工作項目清單是全域持續累積的,不會因為換日期而改變或重置。
+  // 切換日期時只重新讀取當天的「出勤」資料。
   useEffect(() => {
     if (!initialized) return;
     loadDay(dateKey);
@@ -314,66 +257,7 @@ export default function DailyDispatch() {
     setDateKey((k) => addDays(k, delta));
   }
 
-  const moveAssigneeRef = useRef(null);
-
-  useEffect(() => {
-    dragRef.current = drag;
-  }, [drag]);
-
-  useEffect(() => {
-    function onMove(e) {
-      if (!dragRef.current) return;
-      const x = e.clientX;
-      const y = e.clientY;
-      const el = document.elementFromPoint(x, y);
-      let overTaskId = null;
-      let overGroupIdx = null;
-      let overItemIdx = null;
-      if (el) {
-        const itemEl = el.closest("[data-drag-item]");
-        const groupEl = el.closest("[data-drag-group]");
-        if (itemEl) {
-          overTaskId = itemEl.getAttribute("data-task-id");
-          overGroupIdx = Number(itemEl.getAttribute("data-group-idx"));
-          overItemIdx = Number(itemEl.getAttribute("data-item-idx"));
-        } else if (groupEl) {
-          overTaskId = groupEl.getAttribute("data-task-id");
-          overGroupIdx = Number(groupEl.getAttribute("data-group-idx"));
-          overItemIdx = null;
-        }
-      }
-      setDrag((d) => (d ? { ...d, x, y, overTaskId, overGroupIdx, overItemIdx } : d));
-    }
-    function onUp() {
-      const d = dragRef.current;
-      if (
-        d &&
-        d.overTaskId !== null &&
-        d.overGroupIdx !== null &&
-        d.overGroupIdx !== undefined &&
-        !Number.isNaN(d.overGroupIdx) &&
-        moveAssigneeRef.current
-      ) {
-        moveAssigneeRef.current(d.workerId, d.overTaskId, d.overGroupIdx, d.overItemIdx);
-      }
-      setDrag(null);
-    }
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-    };
-  }, []);
-
-  function handleDragStart(e, taskId, workerId, name) {
-    e.preventDefault();
-    setDrag({ taskId, workerId, name, x: e.clientX, y: e.clientY, overTaskId: null, overGroupIdx: null, overItemIdx: null });
-  }
-
-  // 出勤人員名單的拖曳排序,跟工作項目的拖曳系統完全獨立,避免互相干擾。
+  // 出勤人員名單的拖曳排序。
   const rosterDragRef = useRef(null);
   const moveRosterItemRef = useRef(null);
 
@@ -454,19 +338,9 @@ export default function DailyDispatch() {
     setNewWorker("");
 
     // 新增人員預設為上工
-    const nextStatus = { ...status, [w.id]: "onDuty" };
+    const nextStatus = { ...dayStatus, [w.id]: "onDuty" };
     setStatus(nextStatus);
     persistDayState({ status: nextStatus });
-  }
-
-  function stripAssigneeFromTask(t, workerId) {
-    let found = false;
-    const groups = t.groups.map((g) => {
-      if (g.includes(workerId)) found = true;
-      return g.filter((x) => x !== workerId);
-    });
-    if (!found) return t;
-    return { ...t, groups };
   }
 
   function removeWorker(id) {
@@ -478,16 +352,13 @@ export default function DailyDispatch() {
     const nextHalfDay = { ...halfDay };
     const hadHalfDay = id in nextHalfDay;
     if (hadHalfDay) delete nextHalfDay[id];
-    if (status[id] || nextLate !== lateWorkerIds || nextTempLeave !== tempLeaveWorkerIds || hadHalfDay) {
-      const nextStatus = { ...status };
+    if (dayStatus[id] || nextLate !== lateWorkerIds || nextTempLeave !== tempLeaveWorkerIds || hadHalfDay) {
+      const nextStatus = { ...dayStatus };
       delete nextStatus[id];
       setStatus(nextStatus);
-      const nextTasks = tasks.map((t) => stripAssigneeFromTask(t, id));
-      setTasks(nextTasks);
       setLateWorkerIds(nextLate);
       setTempLeaveWorkerIds(nextTempLeave);
       setHalfDay(nextHalfDay);
-      persistTasks(nextTasks);
       persistDayState({
         status: nextStatus,
         lateWorkerIds: nextLate,
@@ -498,45 +369,62 @@ export default function DailyDispatch() {
   }
 
   function setPersonStatus(id, kind) {
-    const nextStatus = { ...status };
-    if (nextStatus[id] === kind) {
+    const nextStatus = { ...dayStatus };
+    if (status[id] === kind) {
       delete nextStatus[id];
     } else {
       nextStatus[id] = kind;
     }
     setStatus(nextStatus);
-    let nextTasks = tasks;
-    let tasksChanged = false;
-    if (nextStatus[id] !== "onDuty") {
-      nextTasks = tasks.map((t) => stripAssigneeFromTask(t, id));
-      setTasks(nextTasks);
-      tasksChanged = true;
-    }
+    const isFixed = roster.some((w) => w.id === id && w.fixed);
+    const effective = nextStatus[id] || (isFixed ? "onDuty" : undefined);
     // 遲到、臨請都只對「今天有上工」的人有意義,狀態一旦不是上工就自動清掉,避免留下互相矛盾的資料。
     let nextLate = lateWorkerIds;
-    if (nextStatus[id] !== "onDuty" && lateWorkerIds.includes(id)) {
+    if (effective !== "onDuty" && lateWorkerIds.includes(id)) {
       nextLate = lateWorkerIds.filter((x) => x !== id);
       setLateWorkerIds(nextLate);
     }
     let nextTempLeave = tempLeaveWorkerIds;
-    if (nextStatus[id] !== "onDuty" && tempLeaveWorkerIds.includes(id)) {
+    if (effective !== "onDuty" && tempLeaveWorkerIds.includes(id)) {
       nextTempLeave = tempLeaveWorkerIds.filter((x) => x !== id);
       setTempLeaveWorkerIds(nextTempLeave);
     }
     // 半天(上午休/下午休)是排休的附加選項,狀態一旦不是排休就自動清掉。
     let nextHalfDay = halfDay;
-    if (nextStatus[id] !== "off" && id in halfDay) {
+    if (effective !== "off" && id in halfDay) {
       nextHalfDay = { ...halfDay };
       delete nextHalfDay[id];
       setHalfDay(nextHalfDay);
     }
-    if (tasksChanged) persistTasks(nextTasks);
     persistDayState({
       status: nextStatus,
       lateWorkerIds: nextLate,
       tempLeaveWorkerIds: nextTempLeave,
       halfDay: nextHalfDay,
     });
+  }
+
+  // 固定出工名單:輸入在這裡的人,每天自動算出工。
+  function addFixedWorker() {
+    const name = newFixed.trim();
+    if (!name) return;
+    const existing = roster.find((w) => w.name === name);
+    if (existing && existing.fixed) {
+      showError(`${name} 已經在固定出工名單裡了`);
+      return;
+    }
+    const next = existing
+      ? roster.map((w) => (w.id === existing.id ? { ...w, fixed: true } : w))
+      : [...roster, { id: uid(), name, category: fixedTab, fixed: true }];
+    setRoster(next);
+    persistRoster(next);
+    setNewFixed("");
+  }
+
+  function setWorkerFixed(id, fixed) {
+    const next = roster.map((w) => (w.id === id ? { ...w, fixed } : w));
+    setRoster(next);
+    persistRoster(next);
   }
 
   function copyYesterdayStatus() {
@@ -559,19 +447,18 @@ export default function DailyDispatch() {
       if (yesterdayStatus[w.id]) nextStatus[w.id] = yesterdayStatus[w.id];
     });
 
-    // 清掉不再適用的半天/遲到/臨請設定,並把不再上工的人從工作項目移除,維持資料一致。
+    // 清掉不再適用的半天/遲到/臨請設定,維持資料一致。
     const nextHalfDay = { ...halfDay };
     let nextLate = lateWorkerIds;
     let nextTempLeave = tempLeaveWorkerIds;
-    let nextTasks = tasks;
     roster.forEach((w) => {
-      if (nextStatus[w.id] !== "off" && w.id in nextHalfDay) {
+      const eff = nextStatus[w.id] || (w.fixed ? "onDuty" : undefined);
+      if (eff !== "off" && w.id in nextHalfDay) {
         delete nextHalfDay[w.id];
       }
-      if (nextStatus[w.id] !== "onDuty") {
+      if (eff !== "onDuty") {
         if (nextLate.includes(w.id)) nextLate = nextLate.filter((id) => id !== w.id);
         if (nextTempLeave.includes(w.id)) nextTempLeave = nextTempLeave.filter((id) => id !== w.id);
-        nextTasks = nextTasks.map((t) => stripAssigneeFromTask(t, w.id));
       }
     });
 
@@ -579,8 +466,6 @@ export default function DailyDispatch() {
     setHalfDay(nextHalfDay);
     setLateWorkerIds(nextLate);
     setTempLeaveWorkerIds(nextTempLeave);
-    setTasks(nextTasks);
-    persistTasks(nextTasks);
     persistDayState({
       status: nextStatus,
       halfDay: nextHalfDay,
@@ -739,153 +624,6 @@ export default function DailyDispatch() {
     persistDayState({ tempLeaveWorkerIds: next });
   }
 
-  function addQuickTask(workType) {
-    const t = { id: uid(), title: workType, groups: [] };
-    const next = [...tasks, t];
-    setTasks(next);
-    persistTasks(next);
-    setQuickWorkType("");
-  }
-
-  function saveWorkCatalog(text) {
-    const lines = text
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    setWorkCatalog(lines);
-    persistWorkCatalog(lines);
-  }
-
-  function updateTaskTitle(id, title) {
-    const next = tasks.map((t) => (t.id === id ? { ...t, title } : t));
-    setTasks(next);
-  }
-
-  function removeTask(id) {
-    const next = tasks.filter((t) => t.id !== id);
-    setTasks(next);
-    persistTasks(next);
-  }
-
-  function removeAssigneeFromTask(taskId, workerId) {
-    const next = tasks.map((t) => {
-      if (t.id !== taskId) return t;
-      const stripped = stripAssigneeFromTask(t, workerId);
-      const cleanedGroups = stripped.groups.filter((g) => g.length > 0);
-      return { ...stripped, groups: cleanedGroups };
-    });
-    setTasks(next);
-    persistTasks(next);
-  }
-
-  function addGroupToTask(taskId) {
-    const next = tasks.map((t) => (t.id === taskId ? { ...t, groups: [...t.groups, []] } : t));
-    setTasks(next);
-    persistTasks(next);
-  }
-
-  function removeGroupFromTask(taskId, groupIdx) {
-    const next = tasks.map((t) => {
-      if (t.id !== taskId) return t;
-      const removedMembers = t.groups[groupIdx] || [];
-      const remaining = t.groups.filter((_, gi) => gi !== groupIdx);
-      if (remaining.length === 0) {
-        remaining.push([]);
-      }
-      if (removedMembers.length > 0) {
-        // 組別裡如果還有人,不會憑空消失,直接併回第一組。
-        remaining[0] = [...remaining[0], ...removedMembers];
-      }
-      return { ...t, groups: remaining };
-    });
-    setTasks(next);
-    persistTasks(next);
-  }
-
-  // 在同一組內移動順序(direction: -1 往前, 1 往後)
-  function moveAssignee(workerId, targetTaskId, targetGroupIdx, targetItemIdx) {
-    let sourceTaskId = null;
-    let sourceGroupIdx = -1;
-    let sourceItemIdx = -1;
-    tasks.forEach((t) => {
-      t.groups.forEach((g, gi) => {
-        const ii = g.indexOf(workerId);
-        if (ii !== -1) {
-          sourceTaskId = t.id;
-          sourceGroupIdx = gi;
-          sourceItemIdx = ii;
-        }
-      });
-    });
-    if (sourceTaskId === null) {
-      // 這個人本來就不在任何工作項目裡(例如從上面「未指派」清單拖過來的),
-      // 不需要先移除,直接插入目標工作項目就好。
-      const next = tasks.map((t) => {
-        if (t.id !== targetTaskId) return t;
-        let groups = t.groups.map((g) => [...g]);
-        let tgIdx = Math.min(targetGroupIdx, groups.length - 1);
-        if (tgIdx < 0) {
-          groups.push([]);
-          tgIdx = groups.length - 1;
-        }
-        let insertIdx = targetItemIdx == null ? groups[tgIdx].length : targetItemIdx;
-        insertIdx = Math.max(0, Math.min(insertIdx, groups[tgIdx].length));
-        groups[tgIdx] = [...groups[tgIdx].slice(0, insertIdx), workerId, ...groups[tgIdx].slice(insertIdx)];
-        return { ...t, groups };
-      });
-      setTasks(next);
-      persistTasks(next);
-      return;
-    }
-
-    const next = tasks.map((t) => {
-      const isSource = t.id === sourceTaskId;
-      const isTarget = t.id === targetTaskId;
-      if (!isSource && !isTarget) return t;
-
-      if (isSource && !isTarget) {
-        const groups = t.groups.map((g) => g.filter((x) => x !== workerId)).filter((g) => g.length > 0);
-        return { ...t, groups };
-      }
-
-      if (isTarget && !isSource) {
-        let groups = t.groups.map((g) => [...g]);
-        let tgIdx = Math.min(targetGroupIdx, groups.length - 1);
-        if (tgIdx < 0) {
-          groups.push([]);
-          tgIdx = groups.length - 1;
-        }
-        // 來源在別的工作項目裡,插入這一組不受移除影響,直接用目標原本的索引。
-        let insertIdx = targetItemIdx == null ? groups[tgIdx].length : targetItemIdx;
-        insertIdx = Math.max(0, Math.min(insertIdx, groups[tgIdx].length));
-        groups[tgIdx] = [...groups[tgIdx].slice(0, insertIdx), workerId, ...groups[tgIdx].slice(insertIdx)];
-        return { ...t, groups };
-      }
-
-      // 同一個工作項目內移動:先移除,再插入回「移除前」目標原本所在的索引。
-      // 不管往前拖或往後拖都適用同一條公式,不需要額外判斷方向。
-      let groups = t.groups.map((g) => [...g]);
-      const targetOriginalIdx = targetItemIdx;
-      groups[sourceGroupIdx].splice(sourceItemIdx, 1);
-      let tgIdx = Math.min(targetGroupIdx, groups.length - 1);
-      if (tgIdx < 0) {
-        groups.push([]);
-        tgIdx = groups.length - 1;
-      }
-      let insertIdx = targetOriginalIdx == null ? groups[tgIdx].length : targetOriginalIdx;
-      insertIdx = Math.max(0, Math.min(insertIdx, groups[tgIdx].length));
-      groups[tgIdx] = [...groups[tgIdx].slice(0, insertIdx), workerId, ...groups[tgIdx].slice(insertIdx)];
-      groups = groups.filter((g) => g.length > 0);
-      return { ...t, groups };
-    });
-    setTasks(next);
-    persistTasks(next);
-  }
-
-  useEffect(() => {
-    moveAssigneeRef.current = moveAssignee;
-  });
-
   const handleSaveImage = async (targetRef, fileLabel) => {
     if (!targetRef.current || exporting) return;
     setExporting(true);
@@ -901,8 +639,7 @@ export default function DailyDispatch() {
         scale: 2,
         useCORS: true,
       });
-      const sitePrefix = (siteTitle || "").trim();
-      const heading = sitePrefix ? `${sitePrefix} 工作安排` : "工作安排";
+      const heading = pageHeading;
       const fileName = `${heading}-${fileLabel}-${dateKey}.png`;
 
       canvas.toBlob(async (blob) => {
@@ -953,14 +690,9 @@ export default function DailyDispatch() {
   const dateDisplay = formatDisplayDate(dateKey);
   const isToday = dateKey === todayKey;
 
-  const assignedInTasks = new Set(tasks.flatMap((t) => t.groups.flat()));
-
-  // 有出工但還沒被指派到任何工作項目的人 —— 這不是一項真正的工作項目,
-  // 純粹是即時算出來的清單,不會存進 tasks 裡,才不會跟你自己新增的工作項目撞名字、畫面打架。
-  const unassignedOnDutyWorkers = onDutyWorkers.filter((w) => !assignedInTasks.has(w.id));
-
   const sitePrefix = (siteTitle || "").trim();
-  const pageHeading = sitePrefix ? `${sitePrefix} 工作安排` : "工作安排";
+  const pageHeading = sitePrefix ? `${sitePrefix} 出勤人員` : "出勤人員";
+  const fixedWorkers = roster.filter((w) => w.fixed);
 
   async function handleCopyText(text, kind) {
     try {
@@ -970,38 +702,6 @@ export default function DailyDispatch() {
     } catch (e) {
       showError("複製失敗,請手動選取文字複製");
     }
-  }
-
-  function buildTaskSummaryText() {
-    const lines = [`${dateDisplay.compact} ${pageHeading}`, ""];
-    if (tasks.length === 0) {
-      lines.push("今天還沒有安排工作項目");
-    } else {
-      tasks.forEach((t) => {
-        lines.push(t.title);
-        const nonEmptyGroups = t.groups.filter((g) => g.length > 0);
-        if (nonEmptyGroups.length === 0) {
-          lines.push("未指派");
-        } else {
-          nonEmptyGroups.forEach((g) => {
-            lines.push(
-              g
-                .map((id) => roster.find((w) => w.id === id)?.name)
-                .filter(Boolean)
-                .join(".")
-            );
-          });
-        }
-        lines.push("");
-      });
-    }
-    lines.push(`排休人員(${offWorkers.length}人):${offWorkers.length ? offWorkers.map((w) => w.name).join("、") : "無"}`);
-    lines.push(`公休人員(${holidayWorkers.length}人):${holidayWorkers.length ? holidayWorkers.map((w) => w.name).join("、") : "無"}`);
-    lines.push(`公傷人員(${injuredWorkers.length}人):${injuredWorkers.length ? injuredWorkers.map((w) => w.name).join("、") : "無"}`);
-    lines.push(dutyPerson.trim() ? `值日生:${dutyPerson.trim()} 組` : "值日生:組");
-    lines.push(`預計交板日期:${formatMonthDay(boardDate)}`);
-    lines.push(`預計澆置日期:${formatMonthDay(pourDate)}`);
-    return lines.join("\n");
   }
 
   function buildRosterSummaryText() {
@@ -1042,70 +742,6 @@ export default function DailyDispatch() {
     if (holidayWorkers.length) lines.push(`公休:${holidayWorkers.map((w) => w.name).join("、")}`);
     return lines.join("\n");
   }
-
-  const taskSummaryContent = (
-    <>
-      <div style={{ fontSize: 30, fontWeight: 700, color: COLORS.ink, marginBottom: 4 }}>
-        {dateDisplay.compact} {pageHeading}
-      </div>
-      <div style={{ height: 1, background: COLORS.border, margin: "14px 0 22px" }} />
-
-      <div style={{ background: "#FFFFFF", border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 22 }}>
-        {tasks.length === 0 ? (
-          <div style={{ color: COLORS.muted, fontSize: 20 }}>今天還沒有安排工作項目</div>
-        ) : (
-          tasks.map((t, i) => {
-            const nonEmptyGroups = t.groups.filter((g) => g.length > 0);
-            return (
-              <div key={t.id} style={{ marginBottom: i === tasks.length - 1 ? 0 : 20 }}>
-                <div style={{ fontWeight: 700, fontSize: 21, color: COLORS.ink, whiteSpace: "pre-line" }}>{t.title}</div>
-                {nonEmptyGroups.length === 0 ? (
-                  <div style={{ fontSize: 19, color: COLORS.muted, marginTop: 3 }}>未指派</div>
-                ) : (
-                  nonEmptyGroups.map((g, gi) => (
-                    <div key={gi} style={{ fontSize: 19, fontWeight: 600, color: COLORS.accent, marginTop: 3 }}>
-                      {g
-                        .map((id) => roster.find((w) => w.id === id)?.name)
-                        .filter(Boolean)
-                        .join(".")}
-                    </div>
-                  ))
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      <div style={{ marginTop: 22, fontSize: 18, fontWeight: 700, color: COLORS.slateText }}>
-        排休人員({offWorkers.length}人):
-        <span style={{ color: COLORS.muted, fontWeight: 500 }}>
-          {offWorkers.length ? offWorkers.map((w) => w.name).join("、") : "無"}
-        </span>
-      </div>
-      <div style={{ marginTop: 8, fontSize: 18, fontWeight: 700, color: COLORS.violetText }}>
-        公休人員({holidayWorkers.length}人):
-        <span style={{ color: COLORS.muted, fontWeight: 500 }}>
-          {holidayWorkers.length ? holidayWorkers.map((w) => w.name).join("、") : "無"}
-        </span>
-      </div>
-      <div style={{ marginTop: 8, fontSize: 18, fontWeight: 700, color: COLORS.redText }}>
-        公傷人員({injuredWorkers.length}人):
-        <span style={{ color: COLORS.muted, fontWeight: 500 }}>
-          {injuredWorkers.length ? injuredWorkers.map((w) => w.name).join("、") : "無"}
-        </span>
-      </div>
-      <div style={{ marginTop: 16, fontSize: 19, fontWeight: 700, color: COLORS.ink }}>
-        {dutyPerson.trim() ? `值日生:${dutyPerson.trim()} 組` : "值日生:組"}
-      </div>
-      <div style={{ marginTop: 12, fontSize: 18, fontWeight: 700, color: COLORS.slateText }}>
-        預計交板日期:{formatMonthDay(boardDate)}
-      </div>
-      <div style={{ marginTop: 6, fontSize: 18, fontWeight: 700, color: COLORS.slateText }}>
-        預計澆置日期:{formatMonthDay(pourDate)}
-      </div>
-    </>
-  );
 
   const rosterTotalByCat = ROSTER_CATEGORIES.map((c) => roster.filter((w) => w.category === c.key).length);
   const rosterOnDutyByCat = ROSTER_CATEGORIES.map((c) => onDutyWorkers.filter((w) => w.category === c.key).length);
@@ -1203,7 +839,7 @@ export default function DailyDispatch() {
                 value={siteTitle}
                 onChange={(e) => setSiteTitle(e.target.value)}
                 onBlur={() => persistSiteTitle(siteTitle)}
-                placeholder="某某工地"
+                placeholder="填工地名稱"
                 style={{
                   fontSize: 20,
                   fontWeight: 700,
@@ -1213,15 +849,10 @@ export default function DailyDispatch() {
                   outline: "none",
                   color: COLORS.ink,
                   padding: 0,
-                  width: `${Math.max(siteTitle.length, 6) + 0.5}em`,
-                  minWidth: "6.5em",
-                  maxWidth: "100%",
+                  width: "100%",
                   fontFamily: "inherit",
                 }}
               />
-              <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.01em", color: COLORS.ink, whiteSpace: "nowrap" }}>
-                {siteTitle.trim() ? " " : ""}工作安排
-              </span>
             </div>
           </div>
         </div>
@@ -1305,38 +936,28 @@ export default function DailyDispatch() {
         ) : (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              <button
-                onClick={() => setPage("roster")}
-                style={{
-                  flex: 1,
-                  border: `1px solid ${page === "roster" ? COLORS.amber : COLORS.border}`,
-                  background: page === "roster" ? COLORS.amberSoft : COLORS.card,
-                  color: page === "roster" ? COLORS.amberText : COLORS.muted,
-                  borderRadius: 10,
-                  padding: "10px 4px",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                出勤人員
-              </button>
-              <button
-                onClick={() => setPage("tasks")}
-                style={{
-                  flex: 1,
-                  border: `1px solid ${page === "tasks" ? COLORS.accent : COLORS.border}`,
-                  background: page === "tasks" ? COLORS.accentSoft : COLORS.card,
-                  color: page === "tasks" ? COLORS.accent : COLORS.muted,
-                  borderRadius: 10,
-                  padding: "10px 4px",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                工作安排
-              </button>
+              {[
+                { key: "roster", label: "出勤人員" },
+                { key: "fixed", label: "固定出工名單" },
+              ].map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => setPage(p.key)}
+                  style={{
+                    flex: 1,
+                    border: `1px solid ${page === p.key ? COLORS.amber : COLORS.border}`,
+                    background: page === p.key ? COLORS.amberSoft : COLORS.card,
+                    color: page === p.key ? COLORS.amberText : COLORS.muted,
+                    borderRadius: 10,
+                    padding: "10px 4px",
+                    fontSize: 14,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
             </div>
 
             {page === "roster" && (
@@ -1498,6 +1119,11 @@ export default function DailyDispatch() {
                           }}
                         >
                           {w.name}
+                          {w.fixed && (
+                            <span style={{ marginLeft: 5, fontSize: 10.5, fontWeight: 700, color: COLORS.amberText, background: COLORS.amberSoft, borderRadius: 999, padding: "1px 6px" }}>
+                              固定
+                            </span>
+                          )}
                         </span>
                       </div>
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
@@ -1800,10 +1426,7 @@ export default function DailyDispatch() {
                 {copiedKind === "roster" ? "已複製" : "複製"}
               </button>
               <button
-                onClick={() => {
-                  setPreviewKind("roster");
-                  setPreviewOpen(true);
-                }}
+                onClick={() => setPreviewOpen(true)}
                 style={{
                   flex: 1,
                   display: "flex",
@@ -1849,529 +1472,174 @@ export default function DailyDispatch() {
               </>
             )}
 
-            {page === "tasks" && (
-              <>
-            {/* Add task card */}
-            <section
-              style={{
-                background: COLORS.card,
-                border: `1px solid ${COLORS.border}`,
-                borderLeft: `3px solid ${COLORS.accent}`,
-                borderRadius: 12,
-                padding: "16px 16px 14px",
-                marginBottom: 14,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <ClipboardList size={15} color={COLORS.accent} />
-                <h2 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>工作安排</h2>
-                <button
-                  onClick={() => {
-                    setBulkAddText(workCatalog.join("\n"));
-                    setBulkAddOpen(true);
-                  }}
-                  style={{
-                    marginLeft: "auto",
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 999,
-                    padding: "3px 10px",
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    color: COLORS.muted,
-                    background: "#FBFBF9",
-                    cursor: "pointer",
-                  }}
-                >
-                  工作安排清單
-                </button>
-              </div>
-            </section>
-
-            {unassignedOnDutyWorkers.length > 0 && (
+            {page === "fixed" && (
               <section
                 style={{
-                  position: "sticky",
-                  top: 0,
-                  zIndex: 20,
                   background: COLORS.card,
                   border: `1px solid ${COLORS.border}`,
-                  borderBottom: `2px solid ${COLORS.accent}`,
+                  borderLeft: `3px solid ${COLORS.amber}`,
                   borderRadius: 12,
-                  padding: "10px 14px",
+                  padding: "16px 16px 14px",
                   marginBottom: 14,
-                  boxShadow: "0 4px 8px -4px rgba(0,0,0,0.15)",
                 }}
               >
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.muted, marginBottom: 6 }}>
-                  未指派({unassignedOnDutyWorkers.length}人)— 拖曳名字到下面任一工作項目
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <Users size={15} color={COLORS.amber} />
+                  <h2 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>固定出工名單</h2>
+                  <span className="dd-mono" style={{ color: COLORS.muted, fontWeight: 500, fontSize: 12 }}>
+                    {fixedWorkers.length}人
+                  </span>
                 </div>
-                <div style={{ display: "flex", flexWrap: "nowrap", overflowX: "auto", gap: 6, paddingBottom: 2 }}>
-                  {unassignedOnDutyWorkers.map((w) => {
-                    const isDraggingThis = drag && drag.workerId === w.id;
-                    const chipMeta = CATEGORY_META[w.category] || CATEGORY_META.regular;
+                <p style={{ fontSize: 12.5, color: COLORS.muted, margin: "0 0 12px", lineHeight: 1.5 }}>
+                  輸入在這裡的人,每天都會自動算「出工」。有人休假時,再到「出勤人員」把他改成排休、公休或公傷就好。
+                </p>
+
+                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                  {ROSTER_CATEGORIES.map((c) => {
+                    const active = fixedTab === c.key;
+                    const count = fixedWorkers.filter((w) => w.category === c.key).length;
                     return (
-                      <span
-                        key={w.id}
-                        data-drag-item="1"
-                        data-task-id="__unassigned__"
-                        data-group-idx={0}
-                        data-item-idx={0}
+                      <button
+                        key={c.key}
+                        onClick={() => setFixedTab(c.key)}
                         style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          flexShrink: 0,
+                          flex: 1,
+                          border: `1px solid ${active ? COLORS.amber : COLORS.border}`,
+                          background: active ? COLORS.amberSoft : "#FBFBF9",
+                          color: active ? COLORS.amberText : COLORS.muted,
+                          borderRadius: 8,
+                          padding: "7px 4px",
                           fontSize: 12.5,
                           fontWeight: 700,
-                          color: chipMeta.text,
-                          background: chipMeta.soft,
-                          borderRadius: 999,
-                          padding: "4px 10px",
-                          opacity: isDraggingThis ? 0.35 : 1,
-                          touchAction: "none",
-                          cursor: "grab",
-                          whiteSpace: "nowrap",
+                          cursor: "pointer",
                         }}
-                        onPointerDown={(e) => handleDragStart(e, null, w.id, w.name)}
                       >
-                        {w.name}
-                      </span>
+                        {c.label} <span className="dd-mono" style={{ fontWeight: 500 }}>{count}</span>
+                      </button>
                     );
                   })}
                 </div>
-              </section>
-            )}
 
-            {/* Task list */}
-            <section
-              style={{
-                background: COLORS.card,
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 12,
-                overflow: "hidden",
-              }}
-            >
-              {tasks.length === 0 ? (
-                <div style={{ padding: "24px 20px", textAlign: "center" }}>
-                  <p style={{ fontSize: 14, color: COLORS.muted, margin: 0 }}>今天還沒有工作項目,從上面新增第一項吧。</p>
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <input
+                    type="text"
+                    value={newFixed}
+                    onChange={(e) => setNewFixed(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addFixedWorker()}
+                    placeholder="輸入名字"
+                    style={{
+                      flex: 1,
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 9,
+                      padding: "9px 12px",
+                      fontSize: 14,
+                      fontFamily: "inherit",
+                      color: COLORS.ink,
+                      background: "#FBFBF9",
+                    }}
+                  />
+                  <button
+                    onClick={addFixedWorker}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      border: "none",
+                      borderRadius: 9,
+                      padding: "0 14px",
+                      background: COLORS.amber,
+                      color: "#FFF",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Plus size={14} /> 新增
+                  </button>
                 </div>
-              ) : (
-                tasks.map((t, i) => {
-                  return (
-                    <div
-                      key={t.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        gap: 10,
-                        padding: "13px 16px",
-                        borderTop: i === 0 ? "none" : `1px solid ${COLORS.border}`,
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                          <textarea
-                            value={t.title}
-                            onChange={(e) => updateTaskTitle(t.id, e.target.value)}
-                            onBlur={() => persistTasks(tasks)}
-                            rows={Math.max(t.title.split("\n").length, 1)}
-                            style={{
-                              fontSize: 14,
-                              fontWeight: 500,
-                              border: "none",
-                              background: "none",
-                              outline: "none",
-                              color: COLORS.ink,
-                              padding: 0,
-                              flex: 1,
-                              minWidth: 0,
-                              fontFamily: "inherit",
-                              resize: "none",
-                              lineHeight: 1.5,
-                              overflow: "hidden",
-                            }}
-                          />
-                        </div>
-                        <div style={{ marginTop: 6, marginLeft: 20, display: "flex", flexDirection: "column", gap: 6 }}>
-                          {t.groups.flat().length === 0 ? (() => {
-                            const isDropTarget = drag && drag.overTaskId === t.id && drag.overGroupIdx === 0;
-                            return (
-                              <div
-                                data-drag-group="1"
-                                data-task-id={t.id}
-                                data-group-idx={0}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  padding: "5px 6px",
-                                  borderRadius: 8,
-                                  border: `1px dashed ${isDropTarget ? COLORS.accent : COLORS.border}`,
-                                  background: isDropTarget ? COLORS.accentSoft : "transparent",
-                                  minHeight: 30,
-                                  width: "100%",
-                                  boxSizing: "border-box",
-                                }}
-                              >
-                                <span style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.muted, padding: "3px 6px" }}>未指派</span>
-                              </div>
-                            );
-                          })() : (
-                            t.groups.map((group, gi) => {
-                              const isDropTarget = drag && drag.overTaskId === t.id && drag.overGroupIdx === gi;
-                              return (
-                                <div key={gi} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                  <div
-                                    data-drag-group="1"
-                                    data-task-id={t.id}
-                                    data-group-idx={gi}
-                                    style={{
-                                      flex: 1,
-                                      minWidth: 0,
-                                      display: "flex",
-                                      flexWrap: "wrap",
-                                      gap: 5,
-                                      alignItems: "center",
-                                      padding: "5px 6px",
-                                      borderRadius: 8,
-                                      border: `1px dashed ${isDropTarget ? COLORS.accent : COLORS.border}`,
-                                      background: isDropTarget ? COLORS.accentSoft : "transparent",
-                                      minHeight: 30,
-                                    }}
-                                  >
-                                    {group.map((id, itemIdx) => {
-                                      const w = roster.find((r) => r.id === id);
-                                      if (!w) return null;
-                                      const isLeader = itemIdx === 0;
-                                      const isDraggingThis = drag && drag.workerId === id;
-                                      const chipMeta = CATEGORY_META[w.category] || CATEGORY_META.regular;
-                                      return (
-                                        <span
-                                          key={id}
-                                          data-drag-item="1"
-                                          data-task-id={t.id}
-                                          data-group-idx={gi}
-                                          data-item-idx={itemIdx}
-                                          style={{
-                                            display: "inline-flex",
-                                            alignItems: "center",
-                                            gap: 2,
-                                            fontSize: 12.5,
-                                            fontWeight: 700,
-                                            color: isLeader ? "#FFFFFF" : chipMeta.text,
-                                            background: isLeader ? chipMeta.color : chipMeta.soft,
-                                            borderRadius: 999,
-                                            padding: "3px 4px 3px 2px",
-                                            opacity: isDraggingThis ? 0.35 : 1,
-                                            touchAction: "none",
-                                          }}
-                                        >
-                                          <span
-                                            onPointerDown={(e) => handleDragStart(e, t.id, id, w.name)}
-                                            aria-label={`拖曳移動${w.name}`}
-                                            style={{
-                                              display: "inline-flex",
-                                              alignItems: "center",
-                                              gap: 3,
-                                              padding: "2px 2px",
-                                              color: "inherit",
-                                              cursor: "grab",
-                                              touchAction: "none",
-                                              userSelect: "none",
-                                              WebkitUserSelect: "none",
-                                            }}
-                                          >
-                                            <GripVertical size={12} />
-                                            {w.name}
-                                          </span>
-                                          <button
-                                            onClick={() => removeAssigneeFromTask(t.id, id)}
-                                            aria-label={`取消指派給${w.name}`}
-                                            style={{
-                                              border: "none",
-                                              background: "rgba(0,0,0,0.12)",
-                                              borderRadius: "50%",
-                                              width: 15,
-                                              height: 15,
-                                              display: "flex",
-                                              alignItems: "center",
-                                              justifyContent: "center",
-                                              cursor: "pointer",
-                                              color: "inherit",
-                                              padding: 0,
-                                            }}
-                                          >
-                                            <X size={9} />
-                                          </button>
-                                        </span>
-                                      );
-                                    })}
-                                  </div>
-                                  {gi > 0 && (
-                                    <button
-                                      onClick={() => removeGroupFromTask(t.id, gi)}
-                                      aria-label="取消這個組別"
-                                      style={{
-                                        flexShrink: 0,
-                                        border: "none",
-                                        background: "rgba(0,0,0,0.06)",
-                                        borderRadius: "50%",
-                                        width: 20,
-                                        height: 20,
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        cursor: "pointer",
-                                        color: COLORS.muted,
-                                        padding: 0,
-                                      }}
-                                    >
-                                      <X size={12} />
-                                    </button>
-                                  )}
-                                </div>
-                              );
-                            })
-                          )}
 
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {t.groups.flat().length > 0 && (
-                              <button
-                                onClick={() => addGroupToTask(t.id)}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 3,
-                                  fontSize: 12.5,
-                                  fontWeight: 600,
-                                  color: COLORS.muted,
-                                  background: "#F1F2EE",
-                                  border: "none",
-                                  borderRadius: 999,
-                                  padding: "3px 9px",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                <Plus size={11} /> 新增組別
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        {t.groups.flat().length > 1 && (
-                          <p
+                {roster.some((w) => !w.fixed) && (
+                  <select
+                    value=""
+                    onChange={(e) => e.target.value && setWorkerFixed(e.target.value, true)}
+                    style={{
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      color: COLORS.muted,
+                      background: "#F1F2EE",
+                      border: "none",
+                      borderRadius: 999,
+                      padding: "5px 12px",
+                      fontFamily: "inherit",
+                      cursor: "pointer",
+                      marginBottom: 12,
+                    }}
+                  >
+                    <option value="">+ 從現有人員加入</option>
+                    {roster
+                      .filter((w) => !w.fixed)
+                      .map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}({(CATEGORY_META[w.category] || CATEGORY_META.regular).label})
+                        </option>
+                      ))}
+                  </select>
+                )}
+
+                {fixedWorkers.filter((w) => w.category === fixedTab).length === 0 ? (
+                  <p style={{ fontSize: 13, color: COLORS.muted, margin: 0 }}>
+                    {ROSTER_CATEGORIES.find((c) => c.key === fixedTab)?.label}還沒有固定出工的人。
+                  </p>
+                ) : (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {fixedWorkers
+                      .filter((w) => w.category === fixedTab)
+                      .map((w) => {
+                        const chipMeta = CATEGORY_META[w.category] || CATEGORY_META.regular;
+                        return (
+                          <span
+                            key={w.id}
                             style={{
-                              fontSize: 11,
-                              color: COLORS.muted,
-                              margin: "4px 0 0 20px",
-                              whiteSpace: "nowrap",
-                              overflowX: "auto",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: 13.5,
+                              fontWeight: 600,
+                              color: chipMeta.text,
+                              background: chipMeta.soft,
+                              borderRadius: 999,
+                              padding: "5px 6px 5px 12px",
                             }}
                           >
-                            深色是組長,拖曳 <GripVertical size={10} style={{ verticalAlign: "middle" }} /> 可移動順序或換到其他組
-                          </p>
-                        )}
-                      </div>
-
-                      <button
-                        onClick={() => removeTask(t.id)}
-                        aria-label="刪除工作項目"
-                        style={{
-                          flexShrink: 0,
-                          border: "none",
-                          background: "none",
-                          color: COLORS.muted,
-                          cursor: "pointer",
-                          padding: 4,
-                          display: "flex",
-                        }}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", padding: "16px 20px" }}>
-                <select
-                  value={quickWorkType}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val) addQuickTask(val);
-                  }}
-                  style={{
-                    width: "100%",
-                    maxWidth: 280,
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 9,
-                    padding: "9px 12px",
-                    fontSize: 14,
-                    fontFamily: "inherit",
-                    color: COLORS.ink,
-                    background: "#FBFBF9",
-                  }}
-                >
-                  <option value="">選擇工作類型</option>
-                  {workCatalog.map((w) => (
-                    <option key={w} value={w}>
-                      {w}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </section>
-
-            <section
-              style={{
-                background: COLORS.card,
-                border: `1px solid ${COLORS.border}`,
-                borderLeft: `3px solid ${COLORS.slate}`,
-                borderRadius: 12,
-                padding: "14px 16px",
-                marginTop: 14,
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: COLORS.slateText, flexShrink: 0 }}>值日生:</span>
-                <select
-                  value={dutyPerson}
-                  onChange={(e) => {
-                    setDutyPerson(e.target.value);
-                    persistDayState({ duty: e.target.value });
-                  }}
-                  style={{
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 7,
-                    outline: "none",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: COLORS.ink,
-                    padding: "4px 8px",
-                    fontFamily: "inherit",
-                    background: "#FFFFFF",
-                    cursor: "pointer",
-                  }}
-                >
-                  <option value="">未選擇</option>
-                  {onDutyWorkers.map((w) => (
-                    <option key={w.id} value={w.name}>
-                      {w.name}
-                    </option>
-                  ))}
-                </select>
-                <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink }}>組</span>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: COLORS.slateText, flexShrink: 0 }}>預計交板日期:</span>
-                <input
-                  type="date"
-                  value={boardDate}
-                  onChange={(e) => handleBoardDateChange(e.target.value)}
-                  style={{
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 8,
-                    padding: "6px 8px",
-                    fontSize: 13,
-                    fontFamily: "inherit",
-                    color: COLORS.ink,
-                    background: "#FBFBF9",
-                  }}
-                />
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: COLORS.slateText, flexShrink: 0 }}>預計澆置日期:</span>
-                <input
-                  type="date"
-                  value={pourDate}
-                  onChange={(e) => handlePourDateChange(e.target.value)}
-                  style={{
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 8,
-                    padding: "6px 8px",
-                    fontSize: 13,
-                    fontFamily: "inherit",
-                    color: COLORS.ink,
-                    background: "#FBFBF9",
-                  }}
-                />
-              </div>
-            </section>
-
-            <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
-              <button
-                onClick={() => handleCopyText(buildTaskSummaryText(), "tasks")}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 10,
-                  padding: "12px 0",
-                  background: COLORS.card,
-                  color: COLORS.ink,
-                  fontWeight: 600,
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
-              >
-                {copiedKind === "tasks" ? "已複製" : "複製"}
-              </button>
-              <button
-                onClick={() => {
-                  setPreviewKind("tasks");
-                  setPreviewOpen(true);
-                }}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 10,
-                  padding: "12px 0",
-                  background: COLORS.card,
-                  color: COLORS.ink,
-                  fontWeight: 600,
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
-              >
-                <Eye size={16} />
-                預覽
-              </button>
-              <button
-                onClick={() => handleSaveImage(taskCaptureRef, "工作安排")}
-                disabled={exporting}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  border: `1px solid ${COLORS.accent}`,
-                  borderRadius: 10,
-                  padding: "12px 0",
-                  background: exporting ? COLORS.accentSoft : COLORS.card,
-                  color: COLORS.accent,
-                  fontWeight: 600,
-                  fontSize: 13,
-                  cursor: exporting ? "default" : "pointer",
-                }}
-              >
-                <Download size={16} />
-                {exporting ? "產生中…" : "存圖"}
-              </button>
-            </div>
-
-            <p style={{ fontSize: 11.5, color: COLORS.muted, textAlign: "center", marginTop: 10 }}>
-              產生一張當日總覽圖,方便傳給大家或列印出來。
-            </p>
-              </>
+                            {w.name}
+                            <button
+                              onClick={() => setWorkerFixed(w.id, false)}
+                              aria-label={`把${w.name}移出固定出工名單`}
+                              style={{
+                                border: "none",
+                                background: "rgba(0,0,0,0.1)",
+                                borderRadius: "50%",
+                                width: 18,
+                                height: 18,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: "pointer",
+                                color: "inherit",
+                                padding: 0,
+                              }}
+                            >
+                              <X size={10} />
+                            </button>
+                          </span>
+                        );
+                      })}
+                  </div>
+                )}
+                <p style={{ fontSize: 11.5, color: COLORS.muted, margin: "12px 0 0" }}>
+                  按 × 只是移出固定名單,人還會留在出勤人員裡。
+                </p>
+              </section>
             )}
           </>
         )}
@@ -2393,114 +1661,6 @@ export default function DailyDispatch() {
       >
         {rosterSummaryContent}
       </div>
-      <div
-        ref={taskCaptureRef}
-        style={{
-          position: "fixed",
-          top: 0,
-          left: -99999,
-          width: 640,
-          background: COLORS.bg,
-          padding: 32,
-          boxSizing: "border-box",
-          fontFamily: "'Inter', system-ui, sans-serif",
-        }}
-      >
-        {taskSummaryContent}
-      </div>
-
-      {bulkAddOpen && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            zIndex: 10000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
-          onClick={() => setBulkAddOpen(false)}
-        >
-          <div
-            style={{
-              background: COLORS.bg,
-              borderRadius: 14,
-              padding: 20,
-              width: "100%",
-              maxWidth: 480,
-              boxShadow: "0 20px 50px rgba(0,0,0,0.35)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: COLORS.ink }}>工作安排清單</h3>
-              <button
-                onClick={() => setBulkAddOpen(false)}
-                aria-label="關閉"
-                style={{
-                  border: "none",
-                  background: "rgba(0,0,0,0.08)",
-                  borderRadius: "50%",
-                  width: 26,
-                  height: 26,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                  color: COLORS.muted,
-                  padding: 0,
-                }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-            <textarea
-              value={bulkAddText}
-              onChange={(e) => setBulkAddText(e.target.value)}
-              placeholder={"一行一種工作類型,例如:\n綁鋼筋\n組板模\n粉光\n...(可以維護將近50種,隨時回來這裡新增或修改)"}
-              rows={14}
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 9,
-                padding: "10px 12px",
-                fontSize: 14,
-                fontFamily: "inherit",
-                color: COLORS.ink,
-                background: "#FFFFFF",
-                resize: "vertical",
-                lineHeight: 1.5,
-                marginBottom: 12,
-              }}
-            />
-            <p style={{ fontSize: 11.5, color: COLORS.muted, margin: "0 0 12px" }}>
-              這裡只是你自己維護的工作類型清單(參考用),不會自動變成工作項目;一行一種類型,隨時可以回來新增或修改。
-            </p>
-            <button
-              onClick={() => {
-                saveWorkCatalog(bulkAddText);
-                setBulkAddOpen(false);
-              }}
-              style={{
-                width: "100%",
-                border: "none",
-                borderRadius: 10,
-                padding: "12px 0",
-                fontSize: 14,
-                fontWeight: 700,
-                background: COLORS.accent,
-                color: "#FFFFFF",
-                cursor: "pointer",
-              }}
-            >
-              確定
-            </button>
-          </div>
-        </div>
-      )}
 
       {previewOpen && (
         <div
@@ -2535,7 +1695,7 @@ export default function DailyDispatch() {
                 fontFamily: "'Inter', system-ui, sans-serif",
               }}
             >
-              {previewKind === "roster" ? rosterSummaryContent : taskSummaryContent}
+              {rosterSummaryContent}
             </div>
           </div>
           <button
@@ -2561,27 +1721,6 @@ export default function DailyDispatch() {
           >
             <X size={18} />
           </button>
-        </div>
-      )}
-
-      {drag && (
-        <div
-          style={{
-            position: "fixed",
-            left: drag.x + 10,
-            top: drag.y + 10,
-            zIndex: 9999,
-            background: COLORS.ink,
-            color: "#FFFFFF",
-            fontSize: 12,
-            fontWeight: 700,
-            padding: "5px 12px",
-            borderRadius: 999,
-            pointerEvents: "none",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-          }}
-        >
-          {drag.name}
         </div>
       )}
 
