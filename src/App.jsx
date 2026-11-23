@@ -119,12 +119,9 @@ export default function DailyDispatch() {
   const [dateKey, setDateKey] = useState(todayKey);
   const [roster, setRoster] = useState([]);
   const [rosterTab, setRosterTab] = useState("regular");
-  const [page, setPage] = useState("roster"); // "roster" | "fixed"
   const [previewOpen, setPreviewOpen] = useState(false);
   const [copiedKind, setCopiedKind] = useState(null);
   const [dayStatus, setStatus] = useState({});
-  const [newFixed, setNewFixed] = useState("");
-  const [fixedTab, setFixedTab] = useState("regular");
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -147,10 +144,10 @@ export default function DailyDispatch() {
   // 會出現「旗標已經是 true,但資料 state 其實還是舊值」的競態問題。
   const [initialized, setInitialized] = useState(false);
 
-  // 「固定出工名單」裡的人:當天沒有特別標記(排休/公休/公傷)時,一律自動算出工。
+  // 名單裡的人每天預設都是「出工」;當天有標記排休/公休/公傷才改成那個狀態。
   const status = { ...dayStatus };
   roster.forEach((w) => {
-    if (w.fixed && !(w.id in status)) status[w.id] = "onDuty";
+    if (!(w.id in status)) status[w.id] = "onDuty";
   });
 
   const showError = useCallback((msg) => {
@@ -376,8 +373,7 @@ export default function DailyDispatch() {
       nextStatus[id] = kind;
     }
     setStatus(nextStatus);
-    const isFixed = roster.some((w) => w.id === id && w.fixed);
-    const effective = nextStatus[id] || (isFixed ? "onDuty" : undefined);
+    const effective = nextStatus[id] || "onDuty";
     // 遲到、臨請都只對「今天有上工」的人有意義,狀態一旦不是上工就自動清掉,避免留下互相矛盾的資料。
     let nextLate = lateWorkerIds;
     if (effective !== "onDuty" && lateWorkerIds.includes(id)) {
@@ -402,29 +398,6 @@ export default function DailyDispatch() {
       tempLeaveWorkerIds: nextTempLeave,
       halfDay: nextHalfDay,
     });
-  }
-
-  // 固定出工名單:輸入在這裡的人,每天自動算出工。
-  function addFixedWorker() {
-    const name = newFixed.trim();
-    if (!name) return;
-    const existing = roster.find((w) => w.name === name);
-    if (existing && existing.fixed) {
-      showError(`${name} 已經在固定出工名單裡了`);
-      return;
-    }
-    const next = existing
-      ? roster.map((w) => (w.id === existing.id ? { ...w, fixed: true } : w))
-      : [...roster, { id: uid(), name, category: fixedTab, fixed: true }];
-    setRoster(next);
-    persistRoster(next);
-    setNewFixed("");
-  }
-
-  function setWorkerFixed(id, fixed) {
-    const next = roster.map((w) => (w.id === id ? { ...w, fixed } : w));
-    setRoster(next);
-    persistRoster(next);
   }
 
   function setHalfDayOption(id, option) {
@@ -592,8 +565,7 @@ export default function DailyDispatch() {
         scale: 2,
         useCORS: true,
       });
-      const heading = pageHeading;
-      const fileName = `${heading}-${fileLabel}-${dateKey}.png`;
+      const fileName = `${pageHeading ? pageHeading + "-" : ""}${fileLabel}-${dateKey}.png`;
 
       canvas.toBlob(async (blob) => {
         if (!blob) {
@@ -644,8 +616,7 @@ export default function DailyDispatch() {
   const isToday = dateKey === todayKey;
 
   const sitePrefix = (siteTitle || "").trim();
-  const pageHeading = sitePrefix ? `${sitePrefix} 出工人員` : "出工人員";
-  const fixedWorkers = roster.filter((w) => w.fixed);
+  const pageHeading = sitePrefix;
 
   async function handleCopyText(text, kind) {
     try {
@@ -661,7 +632,7 @@ export default function DailyDispatch() {
     const totalByCat = ROSTER_CATEGORIES.map((c) => roster.filter((w) => w.category === c.key).length);
     const onDutyByCat = ROSTER_CATEGORIES.map((c) => onDutyWorkers.filter((w) => w.category === c.key).length);
     const lines = [
-      `${dateDisplay.compact} ${pageHeading}`,
+      `${dateDisplay.compact} ${pageHeading}`.trim(),
       "",
       `應到:${totalByCat.join("、")}`,
       `實到:${onDutyByCat.join("、")}`,
@@ -888,33 +859,6 @@ export default function DailyDispatch() {
           <div style={{ textAlign: "center", color: COLORS.muted, padding: "40px 0", fontSize: 14 }}>載入中…</div>
         ) : (
           <>
-            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              {[
-                { key: "roster", label: "出工人員" },
-                { key: "fixed", label: "固定出工名單" },
-              ].map((p) => (
-                <button
-                  key={p.key}
-                  onClick={() => setPage(p.key)}
-                  style={{
-                    flex: 1,
-                    border: `1px solid ${page === p.key ? COLORS.amber : COLORS.border}`,
-                    background: page === p.key ? COLORS.amberSoft : COLORS.card,
-                    color: page === p.key ? COLORS.amberText : COLORS.muted,
-                    borderRadius: 10,
-                    padding: "10px 4px",
-                    fontSize: 14,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-
-            {page === "roster" && (
-              <>
             {/* Roster / status card */}
             <section
               style={{
@@ -1056,11 +1000,6 @@ export default function DailyDispatch() {
                           }}
                         >
                           {w.name}
-                          {w.fixed && (
-                            <span style={{ marginLeft: 5, fontSize: 10.5, fontWeight: 700, color: COLORS.amberText, background: COLORS.amberSoft, borderRadius: 999, padding: "1px 6px" }}>
-                              固定
-                            </span>
-                          )}
                         </span>
                       </div>
                       <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
@@ -1406,178 +1345,6 @@ export default function DailyDispatch() {
                 {exporting ? "產生中…" : "存圖"}
               </button>
             </div>
-              </>
-            )}
-
-            {page === "fixed" && (
-              <section
-                style={{
-                  background: COLORS.card,
-                  border: `1px solid ${COLORS.border}`,
-                  borderLeft: `3px solid ${COLORS.amber}`,
-                  borderRadius: 12,
-                  padding: "16px 16px 14px",
-                  marginBottom: 14,
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                  <Users size={15} color={COLORS.amber} />
-                  <h2 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>固定出工名單</h2>
-                  <span className="dd-mono" style={{ color: COLORS.muted, fontWeight: 500, fontSize: 12 }}>
-                    {fixedWorkers.length}人
-                  </span>
-                </div>
-                <p style={{ fontSize: 12.5, color: COLORS.muted, margin: "0 0 12px", lineHeight: 1.5 }}>
-                  輸入在這裡的人,每天都會自動算「出工」。有人休假時,再到「出工人員」把他改成排休、公休或公傷就好。
-                </p>
-
-                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-                  {ROSTER_CATEGORIES.map((c) => {
-                    const active = fixedTab === c.key;
-                    const count = fixedWorkers.filter((w) => w.category === c.key).length;
-                    return (
-                      <button
-                        key={c.key}
-                        onClick={() => setFixedTab(c.key)}
-                        style={{
-                          flex: 1,
-                          border: `1px solid ${active ? COLORS.amber : COLORS.border}`,
-                          background: active ? COLORS.amberSoft : "#FBFBF9",
-                          color: active ? COLORS.amberText : COLORS.muted,
-                          borderRadius: 8,
-                          padding: "7px 4px",
-                          fontSize: 12.5,
-                          fontWeight: 700,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {c.label} <span className="dd-mono" style={{ fontWeight: 500 }}>{count}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  <input
-                    type="text"
-                    value={newFixed}
-                    onChange={(e) => setNewFixed(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && addFixedWorker()}
-                    placeholder="輸入名字"
-                    style={{
-                      flex: 1,
-                      border: `1px solid ${COLORS.border}`,
-                      borderRadius: 9,
-                      padding: "9px 12px",
-                      fontSize: 14,
-                      fontFamily: "inherit",
-                      color: COLORS.ink,
-                      background: "#FBFBF9",
-                    }}
-                  />
-                  <button
-                    onClick={addFixedWorker}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                      border: "none",
-                      borderRadius: 9,
-                      padding: "0 14px",
-                      background: COLORS.amber,
-                      color: "#FFF",
-                      fontWeight: 600,
-                      fontSize: 13,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <Plus size={14} /> 新增
-                  </button>
-                </div>
-
-                {roster.some((w) => !w.fixed) && (
-                  <select
-                    value=""
-                    onChange={(e) => e.target.value && setWorkerFixed(e.target.value, true)}
-                    style={{
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                      color: COLORS.muted,
-                      background: "#F1F2EE",
-                      border: "none",
-                      borderRadius: 999,
-                      padding: "5px 12px",
-                      fontFamily: "inherit",
-                      cursor: "pointer",
-                      marginBottom: 12,
-                    }}
-                  >
-                    <option value="">+ 從現有人員加入</option>
-                    {roster
-                      .filter((w) => !w.fixed)
-                      .map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name}({(CATEGORY_META[w.category] || CATEGORY_META.regular).label})
-                        </option>
-                      ))}
-                  </select>
-                )}
-
-                {fixedWorkers.filter((w) => w.category === fixedTab).length === 0 ? (
-                  <p style={{ fontSize: 13, color: COLORS.muted, margin: 0 }}>
-                    {ROSTER_CATEGORIES.find((c) => c.key === fixedTab)?.label}還沒有固定出工的人。
-                  </p>
-                ) : (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {fixedWorkers
-                      .filter((w) => w.category === fixedTab)
-                      .map((w) => {
-                        const chipMeta = CATEGORY_META[w.category] || CATEGORY_META.regular;
-                        return (
-                          <span
-                            key={w.id}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 6,
-                              fontSize: 13.5,
-                              fontWeight: 600,
-                              color: chipMeta.text,
-                              background: chipMeta.soft,
-                              borderRadius: 999,
-                              padding: "5px 6px 5px 12px",
-                            }}
-                          >
-                            {w.name}
-                            <button
-                              onClick={() => setWorkerFixed(w.id, false)}
-                              aria-label={`把${w.name}移出固定出工名單`}
-                              style={{
-                                border: "none",
-                                background: "rgba(0,0,0,0.1)",
-                                borderRadius: "50%",
-                                width: 18,
-                                height: 18,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                cursor: "pointer",
-                                color: "inherit",
-                                padding: 0,
-                              }}
-                            >
-                              <X size={10} />
-                            </button>
-                          </span>
-                        );
-                      })}
-                  </div>
-                )}
-                <p style={{ fontSize: 11.5, color: COLORS.muted, margin: "12px 0 0" }}>
-                  按 × 只是移出固定名單,人還會留在出工人員裡。
-                </p>
-              </section>
-            )}
           </>
         )}
       </div>
