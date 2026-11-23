@@ -51,13 +51,13 @@ const TEMP_LEAVE_META = { label: "臨請", color: COLORS.cyan, soft: COLORS.cyan
 const LATE_META = { label: "遲到", color: COLORS.rose, soft: COLORS.roseSoft, text: COLORS.roseText };
 
 const CATEGORY_META = {
-  regular: { label: "正職", color: COLORS.catBlue, soft: COLORS.catBlueSoft, text: COLORS.catBlueText },
+  regular: { label: "棋傑", color: COLORS.catBlue, soft: COLORS.catBlueSoft, text: COLORS.catBlueText },
   migrant: { label: "移工", color: COLORS.catTeal, soft: COLORS.catTealSoft, text: COLORS.catTealText },
   support: { label: "支援", color: COLORS.catBrown, soft: COLORS.catBrownSoft, text: COLORS.catBrownText },
 };
 
 const ROSTER_CATEGORIES = [
-  { key: "regular", label: "正職" },
+  { key: "regular", label: "棋傑" },
   { key: "migrant", label: "移工" },
   { key: "support", label: "支援" },
 ];
@@ -257,7 +257,7 @@ export default function DailyDispatch() {
     setDateKey((k) => addDays(k, delta));
   }
 
-  // 出勤人員名單的拖曳排序。
+  // 出工人員名單的拖曳排序。
   const rosterDragRef = useRef(null);
   const moveRosterItemRef = useRef(null);
 
@@ -425,53 +425,6 @@ export default function DailyDispatch() {
     const next = roster.map((w) => (w.id === id ? { ...w, fixed } : w));
     setRoster(next);
     persistRoster(next);
-  }
-
-  function copyYesterdayStatus() {
-    const yesterdayKey = addDays(dateKey, -1);
-    const raw = readLocalStorage(`day:${yesterdayKey}`);
-    if (!raw) {
-      showError("找不到昨天的資料可以複製");
-      return;
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e) {
-      showError("複製失敗,請再試一次");
-      return;
-    }
-    const yesterdayStatus = parsed.status || {};
-    const nextStatus = {};
-    roster.forEach((w) => {
-      if (yesterdayStatus[w.id]) nextStatus[w.id] = yesterdayStatus[w.id];
-    });
-
-    // 清掉不再適用的半天/遲到/臨請設定,維持資料一致。
-    const nextHalfDay = { ...halfDay };
-    let nextLate = lateWorkerIds;
-    let nextTempLeave = tempLeaveWorkerIds;
-    roster.forEach((w) => {
-      const eff = nextStatus[w.id] || (w.fixed ? "onDuty" : undefined);
-      if (eff !== "off" && w.id in nextHalfDay) {
-        delete nextHalfDay[w.id];
-      }
-      if (eff !== "onDuty") {
-        if (nextLate.includes(w.id)) nextLate = nextLate.filter((id) => id !== w.id);
-        if (nextTempLeave.includes(w.id)) nextTempLeave = nextTempLeave.filter((id) => id !== w.id);
-      }
-    });
-
-    setStatus(nextStatus);
-    setHalfDay(nextHalfDay);
-    setLateWorkerIds(nextLate);
-    setTempLeaveWorkerIds(nextTempLeave);
-    persistDayState({
-      status: nextStatus,
-      halfDay: nextHalfDay,
-      lateWorkerIds: nextLate,
-      tempLeaveWorkerIds: nextTempLeave,
-    });
   }
 
   function setHalfDayOption(id, option) {
@@ -691,7 +644,7 @@ export default function DailyDispatch() {
   const isToday = dateKey === todayKey;
 
   const sitePrefix = (siteTitle || "").trim();
-  const pageHeading = sitePrefix ? `${sitePrefix} 出勤人員` : "出勤人員";
+  const pageHeading = sitePrefix ? `${sitePrefix} 出工人員` : "出工人員";
   const fixedWorkers = roster.filter((w) => w.fixed);
 
   async function handleCopyText(text, kind) {
@@ -937,7 +890,7 @@ export default function DailyDispatch() {
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
               {[
-                { key: "roster", label: "出勤人員" },
+                { key: "roster", label: "出工人員" },
                 { key: "fixed", label: "固定出工名單" },
               ].map((p) => (
                 <button
@@ -975,26 +928,10 @@ export default function DailyDispatch() {
             >
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
                 <Users size={15} color={COLORS.amber} />
-                <h2 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>出勤人員</h2>
+                <h2 style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>出工人員</h2>
                 <span className="dd-mono" style={{ color: COLORS.muted, fontWeight: 500, fontSize: 12 }}>
                   {roster.length}人
                 </span>
-                <button
-                  onClick={copyYesterdayStatus}
-                  style={{
-                    marginLeft: "auto",
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 999,
-                    padding: "3px 10px",
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    color: COLORS.muted,
-                    background: "#FBFBF9",
-                    cursor: "pointer",
-                  }}
-                >
-                  複製昨天出勤
-                </button>
               </div>
 
               <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
@@ -1447,7 +1384,7 @@ export default function DailyDispatch() {
                 預覽
               </button>
               <button
-                onClick={() => handleSaveImage(rosterCaptureRef, "出勤人員")}
+                onClick={() => handleSaveImage(rosterCaptureRef, "出工人員")}
                 disabled={exporting}
                 style={{
                   flex: 1,
@@ -1491,7 +1428,7 @@ export default function DailyDispatch() {
                   </span>
                 </div>
                 <p style={{ fontSize: 12.5, color: COLORS.muted, margin: "0 0 12px", lineHeight: 1.5 }}>
-                  輸入在這裡的人,每天都會自動算「出工」。有人休假時,再到「出勤人員」把他改成排休、公休或公傷就好。
+                  輸入在這裡的人,每天都會自動算「出工」。有人休假時,再到「出工人員」把他改成排休、公休或公傷就好。
                 </p>
 
                 <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
@@ -1637,7 +1574,7 @@ export default function DailyDispatch() {
                   </div>
                 )}
                 <p style={{ fontSize: 11.5, color: COLORS.muted, margin: "12px 0 0" }}>
-                  按 × 只是移出固定名單,人還會留在出勤人員裡。
+                  按 × 只是移出固定名單,人還會留在出工人員裡。
                 </p>
               </section>
             )}
